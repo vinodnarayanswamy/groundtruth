@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 from .store import GraphStore
 
@@ -43,10 +44,12 @@ def _full_body(store: GraphStore, node_id: str) -> str:
     row = store.get_node(node_id)
     if row is None:
         return ""
-    # In a real build you'd slice the file by span; here we reconstruct
-    # a faithful stub from stored metadata to keep the prototype self-contained.
-    doc = f'    """{row["docstring"]}"""\n' if row["docstring"] else ""
-    return f'{row["signature"]}:\n{doc}    ...  # lines {row["start_line"]}-{row["end_line"]}'
+    try:
+        lines = Path(row["file"]).read_text(encoding="utf-8").splitlines()
+        return "\n".join(lines[row["start_line"] - 1 : row["end_line"]])
+    except OSError:
+        doc = f'    """{row["docstring"]}"""\n' if row["docstring"] else ""
+        return f'{row["signature"]}:\n{doc}    ...  # lines {row["start_line"]}-{row["end_line"]}'
 
 
 def _signature_only(store: GraphStore, node_id: str) -> str:
