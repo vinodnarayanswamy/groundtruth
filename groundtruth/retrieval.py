@@ -45,7 +45,8 @@ def _full_body(store: GraphStore, node_id: str) -> str:
     if row is None:
         return ""
     try:
-        lines = Path(row["file"]).read_text(encoding="utf-8").splitlines()
+        src = row["source_path"] or row["file"]
+        lines = Path(src).read_text(encoding="utf-8").splitlines()
         return "\n".join(lines[row["start_line"] - 1 : row["end_line"]])
     except OSError:
         doc = f'    """{row["docstring"]}"""\n' if row["docstring"] else ""

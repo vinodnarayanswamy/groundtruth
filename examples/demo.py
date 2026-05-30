@@ -3,6 +3,7 @@ token-budgeted context pack for a target node.
 
 Usage:
     python -m examples.demo examples/sample_app.py
+    python -m examples.demo examples/sample_app.py "examples/sample_app.py::checkout"
 """
 
 import sys
@@ -10,7 +11,7 @@ import sys
 from groundtruth import GraphStore, context_pack, index_path
 
 
-def main(path: str):
+def main(path: str, target: str | None = None):
     print(f"Indexing {path} ...\n")
     result = index_path(path)
 
@@ -33,15 +34,16 @@ def main(path: str):
 
     print("== Edges (post-resolution sample) ==")
     rows = store.conn.execute(
-        "SELECT src, rel, dst, resolved FROM edges ORDER BY rel, src"
+        "SELECT src, rel, dst, resolved, confidence FROM edges ORDER BY rel, src"
     ).fetchall()
     for r in rows:
         mark = "->" if r["resolved"] else ".."
-        print(f"  {r['src']}  {mark}[{r['rel']}]  {r['dst']}")
+        conf = f"  ({r['confidence']})" if r["confidence"] else ""
+        print(f"  {r['src']}  {mark}[{r['rel']}]  {r['dst']}{conf}")
     print()
 
-    # Pick a target with some neighborhood: CartRepository.add
-    target = f"{path}::CartRepository.add"
+    # Default to a target with some neighborhood: CartRepository.add
+    target = target or f"{path}::CartRepository.add"
     print(f"== Context pack for {target} (budget 400 tokens) ==")
     pack = context_pack(store, target, max_tokens=400, hops=2)
     print(f"  nodes packed: {pack['node_count']}")
@@ -50,4 +52,7 @@ def main(path: str):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "examples/sample_app.py")
+    main(
+        sys.argv[1] if len(sys.argv) > 1 else "examples/sample_app.py",
+        sys.argv[2] if len(sys.argv) > 2 else None,
+    )

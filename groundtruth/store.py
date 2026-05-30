@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from .indexer import Edge, IndexResult, Node
+from .indexer import Edge, Import, IndexResult, Node
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS nodes (
@@ -22,20 +22,29 @@ CREATE TABLE IF NOT EXISTS nodes (
     end_line      INTEGER,
     signature     TEXT,
     docstring     TEXT,
-    content_hash  TEXT NOT NULL
+    content_hash  TEXT NOT NULL,
+    source_path   TEXT
 );
 CREATE TABLE IF NOT EXISTS edges (
-    src       TEXT NOT NULL,
-    dst       TEXT NOT NULL,
-    rel       TEXT NOT NULL,
-    resolved  INTEGER NOT NULL DEFAULT 0,
+    src         TEXT NOT NULL,
+    dst         TEXT NOT NULL,
+    rel         TEXT NOT NULL,
+    resolved    INTEGER NOT NULL DEFAULT 0,
+    confidence  TEXT,
     PRIMARY KEY (src, dst, rel)
+);
+CREATE TABLE IF NOT EXISTS imports (
+    file    TEXT NOT NULL,
+    module  TEXT,
+    symbol  TEXT,
+    PRIMARY KEY (file, module, symbol)
 );
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
 CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file);
+CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file);
 """
 
 
@@ -70,9 +79,19 @@ class GraphStore:
 
         for e in result.edges:
             cur.execute(
-                "INSERT OR REPLACE INTO edges(src, dst, rel, resolved) "
-                "VALUES (?, ?, ?, ?)",
-                (e.src, e.dst, e.rel, int(e.resolved)),
+                "INSERT OR REPLACE INTO edges(src, dst, rel, resolved, confidence) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (e.src, e.dst, e.rel, int(e.resolved), e.confidence or None),
+            )
+
+        # Rebuild import records for every file present in this result.
+        for f in {imp.file for imp in result.imports}:
+            cur.execute("DELETE FROM imports WHERE file = ?", (f,))
+        for imp in result.imports:
+            cur.execute(
+                "INSERT OR REPLACE INTO imports(file, module, symbol) "
+                "VALUES (?, ?, ?)",
+                (imp.file, imp.module, imp.symbol),
             )
         self.conn.commit()
         return stats
@@ -81,17 +100,48 @@ class GraphStore:
         cur.execute(
             "INSERT OR REPLACE INTO nodes"
             "(id, kind, name, file, start_line, end_line, signature,"
-            " docstring, content_hash) VALUES (?,?,?,?,?,?,?,?,?)",
+            " docstring, content_hash, source_path) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (n.id, n.kind, n.name, n.file, n.start_line, n.end_line,
-             n.signature, n.docstring, n.content_hash),
+             n.signature, n.docstring, n.content_hash, n.source_path or n.file),
         )
 
     # --- resolution ----------------------------------------------------------
+    def _imports_for(self, file: str):
+        """Return (direct_symbol_modules, module_stems) for an importing file.
+
+        - direct_symbol_modules: {callee_name: {module, ...}} from
+          ``from module import callee`` bindings (the strongest signal).
+        - module_stems: set of last module components from any import, used to
+          match a candidate definition's file stem.
+        """
+        rows = self.conn.execute(
+            "SELECT module, symbol FROM imports WHERE file = ?", (file,)
+        ).fetchall()
+        direct: dict[str, set] = {}
+        stems: set = set()
+        for r in rows:
+            module = r["module"] or ""
+            last = module.split(".")[-1] if module else ""
+            if last:
+                stems.add(last)
+            if r["symbol"]:
+                direct.setdefault(r["symbol"], set()).add(module)
+        return direct, stems
+
+    @staticmethod
+    def _stem(path: str) -> str:
+        base = path.rsplit("/", 1)[-1]
+        return base[:-3] if base.endswith(".py") else base
+
     def resolve_calls(self) -> int:
         """Best-effort: rewrite bare callee names to node ids by name match.
 
-        Same-file matches win; otherwise a unique global match is used.
-        Ambiguous names are left unresolved. Returns count resolved.
+        Resolution tiers, most trustworthy first:
+          1. same_file — a unique definition of the name in the caller's file
+          2. import   — a unique candidate reachable via the file's imports
+          3. global   — a single definition of the name anywhere in the graph
+        Ambiguous names are left unresolved. The chosen tier is recorded in
+        ``edges.confidence``. Returns count resolved.
         """
         cur = self.conn.cursor()
         unresolved = cur.execute(
@@ -99,23 +149,51 @@ class GraphStore:
             "WHERE rel IN ('CALLS','INHERITS') AND resolved = 0"
         ).fetchall()
 
+        imports_cache: dict = {}
         resolved = 0
         for row in unresolved:
             src_file = row["src"].split("::", 1)[0]
             name = row["dst"]
-            # prefer same-file definition
-            cand = cur.execute(
-                "SELECT id FROM nodes WHERE name = ? AND file = ?",
+
+            same = cur.execute(
+                "SELECT id, file, source_path FROM nodes WHERE name = ? AND file = ?",
                 (name, src_file),
             ).fetchall()
-            if not cand:
-                cand = cur.execute(
-                    "SELECT id FROM nodes WHERE name = ?", (name,)
+            choice = confidence = None
+            if len(same) == 1:
+                choice, confidence = same[0]["id"], "same_file"
+            elif len(same) == 0:
+                allc = cur.execute(
+                    "SELECT id, file, source_path FROM nodes WHERE name = ?",
+                    (name,),
                 ).fetchall()
-            if len(cand) == 1:
+                if len(allc) == 1:
+                    choice, confidence = allc[0]["id"], "global"
+                elif len(allc) > 1:
+                    # Disambiguate ambiguous names via the caller's imports.
+                    if src_file not in imports_cache:
+                        imports_cache[src_file] = self._imports_for(src_file)
+                    direct, stems = imports_cache[src_file]
+                    direct_mods = direct.get(name, set())
+                    reachable = []
+                    for c in allc:
+                        cand_stem = self._stem(c["file"])
+                        # symbol-import of this exact name from a matching module
+                        hit = any(
+                            (m.split(".")[-1] if m else "") == cand_stem
+                            or cand_stem in m.split(".")
+                            for m in direct_mods
+                        )
+                        # or any import whose module stem matches the cand file
+                        if hit or cand_stem in stems:
+                            reachable.append(c)
+                    if len(reachable) == 1:
+                        choice, confidence = reachable[0]["id"], "import"
+
+            if choice is not None:
                 cur.execute(
-                    "UPDATE edges SET dst = ?, resolved = 1 "
-                    "WHERE rowid = ?", (cand[0]["id"], row["rowid"]),
+                    "UPDATE edges SET dst = ?, resolved = 1, confidence = ? "
+                    "WHERE rowid = ?", (choice, confidence, row["rowid"]),
                 )
                 resolved += 1
         self.conn.commit()

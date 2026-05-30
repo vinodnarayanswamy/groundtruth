@@ -47,12 +47,13 @@ class Node:
     id: str
     kind: str  # function | method | class
     name: str
-    file: str
+    file: str  # logical path (id prefix); may be repo-namespaced
     start_line: int
     end_line: int
     signature: str
     docstring: str
     content_hash: str
+    source_path: str = ""  # physical path to read source from (open()-able)
 
 
 @dataclass
@@ -61,12 +62,28 @@ class Edge:
     dst: str  # may be an unresolved bare name until resolution pass
     rel: str  # CALLS | INHERITS | IMPORTS | DEFINED_IN
     resolved: bool = False
+    confidence: str = ""  # how dst was resolved: structural|same_file|import|global
+
+
+@dataclass
+class Import:
+    """A single import binding observed in a file.
+
+    `module` is the dotted source module ('repo_b.cart', 'os.path').
+    `symbol` is the name bound into the file's namespace and usable as a
+    direct callee — the imported name (or its alias) for `from M import S`,
+    or None for a plain `import M` (whose calls are attribute access).
+    """
+    file: str  # logical path of the importing file
+    module: str
+    symbol: str | None = None
 
 
 @dataclass
 class IndexResult:
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
+    imports: list[Import] = field(default_factory=list)
 
 
 def _text(node, src: bytes) -> str:
@@ -120,8 +137,41 @@ def _qualified_id(defn, path: str, src: bytes) -> str:
     return f"{path}::{name}"
 
 
-def index_source(path: str, src: bytes) -> IndexResult:
-    """Index a single source buffer into nodes and edges."""
+def _imports_from(stmt, src: bytes) -> list[tuple[str, str | None]]:
+    """Extract (module, bound_symbol) pairs from an import statement node."""
+    out: list[tuple[str, str | None]] = []
+    if stmt.type == "import_statement":
+        # `import a.b`, `import a.b as c` -> plain module import (symbol None)
+        for child in stmt.named_children:
+            if child.type == "aliased_import":
+                name_node = child.child_by_field_name("name")
+                if name_node is not None:
+                    out.append((_text(name_node, src), None))
+            elif child.type == "dotted_name":
+                out.append((_text(child, src), None))
+    elif stmt.type == "import_from_statement":
+        module_node = stmt.child_by_field_name("module_name")
+        module = _text(module_node, src) if module_node is not None else ""
+        for child in stmt.children_by_field_name("name"):
+            if child.type == "aliased_import":
+                name_node = child.child_by_field_name("name")
+                alias = child.child_by_field_name("alias")
+                bound = alias if alias is not None else name_node
+                if bound is not None:
+                    out.append((module, _text(bound, src)))
+            else:
+                out.append((module, _text(child, src)))
+    return out
+
+
+def index_source(path: str, src: bytes, source_path: str | None = None) -> IndexResult:
+    """Index a single source buffer into nodes and edges.
+
+    `path` is the logical path used to build node ids (may be repo-namespaced);
+    `source_path` is the physical path used to read the file later (defaults to
+    `path`).
+    """
+    source_path = source_path or path
     parser = Parser(PY_LANGUAGE)
     tree = parser.parse(src)
     cursor = QueryCursor(_QUERY)
@@ -153,6 +203,7 @@ def index_source(path: str, src: bytes) -> IndexResult:
                 signature=_signature(defn, src),
                 docstring=_docstring(defn, src),
                 content_hash=hashlib.sha1(body).hexdigest(),
+                source_path=source_path,
             )
         )
 
@@ -191,17 +242,34 @@ def index_source(path: str, src: bytes) -> IndexResult:
             callee = _text(fn_field, src)
         result.edges.append(Edge(src=enc_id, dst=callee, rel="CALLS"))
 
+    # Import bindings for this file (used by import-scoped call resolution).
+    for stmt in caps.get("import.from", []) + caps.get("import.plain", []):
+        for module, symbol in _imports_from(stmt, src):
+            result.imports.append(Import(file=path, module=module, symbol=symbol))
+
     return result
 
 
-def index_path(root: str) -> IndexResult:
-    """Index a file or recursively index a directory of .py files."""
+def index_path(root: str, repo: str | None = None) -> IndexResult:
+    """Index a file or recursively index a directory of .py files.
+
+    When `repo` is given, node ids are namespaced as ``repo/<relpath>::name``
+    so multiple repositories can share one graph without path collisions. The
+    physical path (for reading source) is tracked separately.
+    """
     p = Path(root)
+    base = p if p.is_dir() else p.parent
     merged = IndexResult()
     files = [p] if p.is_file() else sorted(p.rglob("*.py"))
     for fp in files:
         src = fp.read_bytes()
-        res = index_source(fp.as_posix(), src)
+        physical = fp.as_posix()
+        if repo:
+            logical = f"{repo}/{fp.relative_to(base).as_posix()}"
+        else:
+            logical = physical
+        res = index_source(logical, src, source_path=physical)
         merged.nodes.extend(res.nodes)
         merged.edges.extend(res.edges)
+        merged.imports.extend(res.imports)
     return merged

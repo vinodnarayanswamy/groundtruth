@@ -31,7 +31,11 @@ pip install -e ".[dev]"
 ## Quickstart
 
 ```bash
+# index a file and dump the graph
 python -m examples.demo examples/sample_app.py
+
+# ...and also print the context pack for one symbol
+python -m examples.demo examples/sample_app.py "examples/sample_app.py::checkout"
 ```
 
 Or from Python:
@@ -48,6 +52,34 @@ pack = context_pack(store, "your_package/mod.py::ClassName.method",
                     max_tokens=2200, hops=2)
 print(pack["prompt"])                     # feed this to your model
 ```
+
+### Indexing multiple repos (one product graph)
+
+Pass `repo=` so node ids are namespaced (`repo/<relpath>::name`) and the repos
+share a single graph without path collisions. Call `resolve_calls()` once, after
+everything is loaded, so cross-repo calls can resolve against each other:
+
+```python
+store = GraphStore("product.db")
+store.upsert(index_path("services/api/",     repo="api"))
+store.upsert(index_path("services/billing/", repo="billing"))
+store.upsert(index_path("libs/common/",      repo="common"))
+store.resolve_calls()
+
+pack = context_pack(store, "api/handlers.py::checkout", max_tokens=2200, hops=2)
+print(pack["prompt"])
+```
+
+Each resolved call edge records *how* it was resolved in `edges.confidence`:
+
+| confidence | meaning |
+|------------|---------|
+| `same_file` | unique definition of the name in the caller's own file |
+| `import`    | ambiguous name disambiguated via the caller's imports |
+| `global`    | a single definition of the name anywhere in the graph |
+
+Ambiguous names that none of these can pin down are left unresolved rather than
+guessed.
 
 ## How it works
 
@@ -72,15 +104,20 @@ touches changed nodes and rebuilds their outgoing edges.
 
 ## Limitations (and the resolution gap)
 
-tree-sitter resolves *definitions* and *same-file calls* exactly, but
-*cross-file call resolution* is best-effort by name. Ambiguous names (e.g. two
-methods both called `save`) are intentionally left unresolved rather than
-guessed. Closing this gap with type information (an LSP, or Jedi for Python) is
-the main accuracy lever — see the roadmap.
+tree-sitter resolves *definitions* and *same-file calls* exactly. Cross-file
+calls are resolved best-effort: a unique global name match, or — when a name is
+ambiguous — disambiguated against the calling file's imports (see the
+`confidence` column above). Names that remain ambiguous are intentionally left
+unresolved rather than guessed. Two gaps remain that need *type* information to
+close: attribute calls on variables (`obj.save()`, where `obj`'s type is
+inferred) and imports whose module stems collide. An LSP or Jedi for Python is
+the main accuracy lever here — see the roadmap.
 
 ## Roadmap
 
-- [ ] Type-aware cross-file resolution (LSP / Jedi) for exact call edges
+- [x] Multi-repo graphs via namespaced node ids (`repo=` on `index_path`)
+- [x] Import-scoped call resolution to disambiguate cross-file/cross-repo names
+- [ ] Type-aware resolution (LSP / Jedi) for attribute calls (`obj.save()`)
 - [ ] PageRank-style salience ranking layered on typed edges
 - [ ] Real tokenizer for budget accuracy (currently a ~4 chars/token heuristic)
 - [x] File-span body extraction (prototype reconstructs stubs from metadata)
