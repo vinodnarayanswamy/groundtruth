@@ -1,6 +1,6 @@
 """Smoke + behavior tests for the codegraph prototype."""
 
-from codegraph import GraphStore, context_pack, index_source
+from groundtruth import GraphStore, context_pack, index_source
 
 SRC = b'''
 def helper(x):

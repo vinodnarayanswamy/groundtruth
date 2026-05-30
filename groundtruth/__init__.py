@@ -1,4 +1,4 @@
-"""codegraph — a tree-sitter code knowledge graph for token-efficient
+"""groundtruth — a tree-sitter code knowledge graph for token-efficient
 code retrieval and generation."""
 
 from .indexer import Edge, IndexResult, Node, index_path, index_source

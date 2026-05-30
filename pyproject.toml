@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "codegraph"
+name = "groundtruth"
 version = "0.1.0"
-description = "A tree-sitter code knowledge graph for token-efficient code retrieval and generation."
+description = "groundtruth — a tree-sitter code knowledge graph for token-efficient code retrieval and generation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Vinod Narayanswamy" }]
-keywords = ["tree-sitter", "knowledge-graph", "llm", "code-retrieval", "rag", "ast"]
+keywords = ["groundtruth", "tree-sitter", "knowledge-graph", "llm", "code-retrieval", "rag", "ast"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -26,11 +26,11 @@ dependencies = [
 dev = ["pytest>=7.0"]
 
 [project.urls]
-Homepage = "https://github.com/USERNAME/codegraph"
-Issues = "https://github.com/USERNAME/codegraph/issues"
+Homepage = "https://github.com/vinodnarayanswamy/groundtruth"
+Issues = "https://github.com/vinodnarayanswamy/groundtruth/issues"
 
 [project.scripts]
-codegraph-demo = "examples.demo:main"
+groundtruth-demo = "examples.demo:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["codegraph"]
+packages = ["groundtruth"]

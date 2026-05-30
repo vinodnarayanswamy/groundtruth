@@ -7,7 +7,7 @@ Usage:
 
 import sys
 
-from codegraph import GraphStore, context_pack, index_path
+from groundtruth import GraphStore, context_pack, index_path
 
 
 def main(path: str):

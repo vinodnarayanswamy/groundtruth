@@ -1,9 +1,9 @@
-# codegraph
+# groundtruth
 
 A tree-sitter code knowledge graph for **token-efficient code retrieval and generation**.
 
 Instead of stuffing whole files into an LLM prompt so the model can re-derive
-how your code fits together, `codegraph` parses your source into a graph of
+how your code fits together, `groundtruth` parses your source into a graph of
 definitions and relationships, then retrieves only the *relevant* slice for a
 given task — the target symbol plus its ranked dependency neighborhood, packed
 under a token budget.
@@ -37,7 +37,7 @@ python -m examples.demo examples/sample_app.py
 Or from Python:
 
 ```python
-from codegraph import index_path, GraphStore, context_pack
+from groundtruth import index_path, GraphStore, context_pack
 
 result = index_path("your_package/")      # parse files into nodes + edges
 store = GraphStore("graph.db")            # SQLite store (or ":memory:")
