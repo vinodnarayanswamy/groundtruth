@@ -83,7 +83,7 @@ the main accuracy lever — see the roadmap.
 - [ ] Type-aware cross-file resolution (LSP / Jedi) for exact call edges
 - [ ] PageRank-style salience ranking layered on typed edges
 - [ ] Real tokenizer for budget accuracy (currently a ~4 chars/token heuristic)
-- [ ] File-span body extraction (prototype reconstructs stubs from metadata)
+- [x] File-span body extraction (prototype reconstructs stubs from metadata)
 - [ ] Additional language grammars (JS/TS, Java, Go)
 - [ ] Incremental watch mode
 
